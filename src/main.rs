@@ -1,8 +1,11 @@
+use cvk::ContextInfo;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
+
+const APP_NAME: &'static str = "Caustix Viewer";
 
 #[derive(Default)]
 struct App {
@@ -12,8 +15,9 @@ struct App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window_attribs = Window::default_attributes()
-            .with_title("Caustix")
-            .with_inner_size(LogicalSize::new(1280, 720));
+            .with_title(APP_NAME)
+            .with_inner_size(LogicalSize::new(640, 480))
+            .with_resizable(false);
 
         self.window = Some(event_loop.create_window(window_attribs).unwrap());
     }
@@ -57,10 +61,14 @@ fn main() {
     // input, and uses significantly less power/CPU time than ControlFlow::Poll.
     // event_loop.set_control_flow(ControlFlow::Wait);
 
-    cvk::Context::init(Default::default());
+    let context_info = ContextInfo::default()
+        .app_name(c"Caustix Viewer")
+        .engine_name(c"Caustix")
+        .version(cvk::ApiVersion::V1_2)
+        .debugging(cfg!(debug_assertions));
 
-    cvk::Context::get();
+    cvk::Context::init(&context_info);
 
     let mut app = App::default();
-    event_loop.run_app(&mut app);
+    event_loop.run_app(&mut app).unwrap();
 }
