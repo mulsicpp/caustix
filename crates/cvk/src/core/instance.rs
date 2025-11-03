@@ -14,7 +14,7 @@ pub struct Instance {
     debug_messenger: vk::DebugUtilsMessengerEXT,
     pub(crate) extensions: InstanceExtensions,
     pub(crate) instance: ash::Instance,
-    _entry: ash::Entry,
+    pub(crate) entry: ash::Entry,
 }
 
 impl Instance {
@@ -152,7 +152,7 @@ impl Instance {
             debug_messenger,
             extensions,
             instance,
-            _entry: entry,
+            entry,
         }
     }
 }
@@ -165,7 +165,7 @@ impl Drop for Instance {
                 if let Some(ref debug_utils) = self.extensions.debug_utils {
                     debug_utils.destroy_debug_utils_messenger(self.debug_messenger, None);
                 } else {
-                    ash::ext::debug_utils::Instance::new(&self._entry, &self.instance)
+                    ash::ext::debug_utils::Instance::new(&self.entry, &self.instance)
                         .destroy_debug_utils_messenger(self.debug_messenger, None);
                 }
             }

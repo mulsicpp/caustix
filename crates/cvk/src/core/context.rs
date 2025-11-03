@@ -1,3 +1,6 @@
+use crate::Handle;
+use crate::Surface;
+
 use super::device::*;
 use super::instance::*;
 
@@ -17,6 +20,7 @@ type ContextWriteGuard = MappedRwLockWriteGuard<'static, Context>;
 pub struct Context {
     window: Option<Window>,
     _device: Device,
+    surface: Option<Surface>,
     _instance: Instance,
 }
 
@@ -56,14 +60,18 @@ impl Context {
     pub fn init(info: ContextInfo) {
         let instance = Instance::create(&info);
 
-        // unsafe { instance.surface().unwrap().destroy_surface(vk::SurfaceKHR::null(), None) };
+        let surface = info
+            .window
+            .as_ref()
+            .and_then(|window| Some(Surface::new(&instance, window)));
 
         let device = Device::create(&instance);
 
         *CONTEXT.write() = Some(Context {
-            _instance: instance,
-            _device: device,
             window: info.window,
+            _device: device,
+            surface,
+            _instance: instance,
         });
     }
 
@@ -97,5 +105,20 @@ impl Context {
 
     pub fn window_mut(&mut self) -> Option<&mut Window> {
         self.window.as_mut()
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        if let Some(surface) = self.surface.as_mut() {
+            unsafe {
+                if let Some(ref surface_fns) = self._instance.extensions.surface {
+                    surface_fns.destroy_surface(surface.handle(), None);
+                } else {
+                    ash::khr::surface::Instance::new(&self._instance.entry, &self._instance.instance)
+                        .destroy_surface(surface.handle(), None);
+                }
+            }
+        }
     }
 }
