@@ -1,20 +1,16 @@
 use std::ffi::{CStr, CString, c_void};
 
-use ash::vk::{self, DebugUtilsMessengerEXT, Handle};
-use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+use ash::vk;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use winit::window::Window;
 
 use crate::ContextInfo;
 
-pub(crate) struct InstanceExtensions {
-    pub surface: Option<ash::khr::surface::Instance>,
-    pub debug_utils: Option<ash::ext::debug_utils::Instance>,
-}
-
 pub struct Instance {
-    debug_messenger: vk::DebugUtilsMessengerEXT,
-    pub(crate) extensions: InstanceExtensions,
+    pub(crate) debug_utils: Option<DebugUtils>,
+    pub(crate) surface: Option<Surface>,
     pub(crate) instance: ash::Instance,
-    pub(crate) entry: ash::Entry,
+    pub(crate) _entry: ash::Entry,
 }
 
 impl Instance {
@@ -33,7 +29,7 @@ impl Instance {
         vk::FALSE
     }
 
-    pub fn create(info: &ContextInfo) -> Self {
+    pub fn create(info: ContextInfo) -> Self {
         let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan entry") };
 
         let layer_names = unsafe { entry.enumerate_instance_layer_properties().unwrap() }
@@ -41,16 +37,17 @@ impl Instance {
             .filter_map(|prop| Some(CString::from(prop.layer_name_as_c_str().ok()?)))
             .collect::<Vec<_>>();
 
-        let extension_names = unsafe { entry.enumerate_instance_extension_properties(None).unwrap() }
-            .iter()
-            .filter_map(|prop| Some(CString::from(prop.extension_name_as_c_str().ok()?)))
-            .collect::<Vec<_>>();
+        let extension_names =
+            unsafe { entry.enumerate_instance_extension_properties(None).unwrap() }
+                .iter()
+                .filter_map(|prop| Some(CString::from(prop.extension_name_as_c_str().ok()?)))
+                .collect::<Vec<_>>();
 
         let mut required_layers: Vec<*const i8> = vec![];
         let mut required_extensions: Vec<*const i8> = vec![];
 
         if let Some(ref window) = info.window {
-            let raw_display_handle: RawDisplayHandle = window.display_handle().unwrap().into();
+            let raw_display_handle = window.display_handle().unwrap().as_raw();
 
             let mut surface_extenstions =
                 ash_window::enumerate_required_extensions(raw_display_handle)
@@ -99,60 +96,43 @@ impl Instance {
             .enabled_layer_names(required_layers.as_slice())
             .enabled_extension_names(required_extensions.as_slice());
 
-        let instance;
-        let mut debug_utils = None;
-        let mut debug_messenger = DebugUtilsMessengerEXT::null();
+        let mut debug_messenger_info = None;
 
         if info.debugging {
             use vk::DebugUtilsMessageSeverityFlagsEXT as Severity;
             use vk::DebugUtilsMessageTypeFlagsEXT as Type;
 
-            let mut debug_messenger_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
+            debug_messenger_info = Some(vk::DebugUtilsMessengerCreateInfoEXT::default()
                 .message_severity(Severity::VERBOSE | Severity::WARNING | Severity::ERROR)
                 .message_type(Type::GENERAL | Type::PERFORMANCE | Type::VALIDATION)
-                .pfn_user_callback(Some(Self::debug_callback));
+                .pfn_user_callback(Some(Self::debug_callback)));
+            instance_info = instance_info.push_next(debug_messenger_info.as_mut().unwrap());
 
-            instance_info = instance_info.push_next(&mut debug_messenger_info);
-
-            instance = unsafe {
-                entry
-                    .create_instance(&instance_info, None)
-                    .expect("Failed to create VkInstance")
-            };
-
-            debug_utils = {
-                let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
-
-                debug_messenger = unsafe {
-                    debug_utils.create_debug_utils_messenger(&debug_messenger_info, None)
-                }
-                .expect("Failed to create debug messenger");
-
-                Some(debug_utils)
-            }
-        } else {
-            instance = unsafe {
-                entry
-                    .create_instance(&instance_info, None)
-                    .expect("Failed to create VkInstance")
-            };
         };
 
-        let surface = info
-            .window
-            .as_ref()
-            .and_then(|_| Some(ash::khr::surface::Instance::new(&entry, &instance)));
+        let instance = unsafe {
+            entry
+                .create_instance(&instance_info, None)
+                .expect("Failed to create VkInstance")
+        };
 
-        let extensions = InstanceExtensions {
-            surface,
-            debug_utils,
+        let debug_utils = if let Some(messenger_info) = debug_messenger_info {
+            Some(DebugUtils::create(&entry, &instance, &messenger_info))
+        } else {
+            None
+        };
+
+        let surface = if let Some(window) = info.window {
+            Some(Surface::create(&entry, &instance, window))
+        } else {
+            None
         };
 
         Self {
-            debug_messenger,
-            extensions,
+            debug_utils,
+            surface,
             instance,
-            entry,
+            _entry: entry,
         }
     }
 }
@@ -161,15 +141,66 @@ impl Drop for Instance {
     fn drop(&mut self) {
         println!("dropping the instance");
         unsafe {
-            if !self.debug_messenger.is_null() {
-                if let Some(ref debug_utils) = self.extensions.debug_utils {
-                    debug_utils.destroy_debug_utils_messenger(self.debug_messenger, None);
-                } else {
-                    ash::ext::debug_utils::Instance::new(&self.entry, &self.instance)
-                        .destroy_debug_utils_messenger(self.debug_messenger, None);
-                }
+            if let Some(DebugUtils { ref fns, messenger }) = self.debug_utils {
+                fns.destroy_debug_utils_messenger(messenger, None);
             }
+
+            if let Some(Surface {
+                ref fns, handle, ..
+            }) = self.surface
+            {
+                fns.destroy_surface(handle, None);
+            }
+
             self.instance.destroy_instance(None);
+        }
+    }
+}
+
+pub struct DebugUtils {
+    messenger: vk::DebugUtilsMessengerEXT,
+    fns: ash::ext::debug_utils::Instance,
+}
+
+impl DebugUtils {
+    fn create(
+        entry: &ash::Entry,
+        instance: &ash::Instance,
+        messenger_info: &vk::DebugUtilsMessengerCreateInfoEXT,
+    ) -> Self {
+        let fns = ash::ext::debug_utils::Instance::new(&entry, &instance);
+
+        let messenger = unsafe { fns.create_debug_utils_messenger(messenger_info, None) }
+            .expect("Failed to create debug messenger");
+
+        Self { fns, messenger }
+    }
+}
+
+pub struct Surface {
+    pub(crate) window: Window,
+    pub(crate) handle: vk::SurfaceKHR,
+    pub(crate) fns: ash::khr::surface::Instance,
+}
+
+impl Surface {
+    fn create(entry: &ash::Entry, instance: &ash::Instance, window: Window) -> Self {
+        let display_handle = window
+            .display_handle()
+            .expect("Failed to acquire display handle")
+            .as_raw();
+        let window_handle = window
+            .window_handle()
+            .expect("Failed to acquire window handle")
+            .as_raw();
+
+        Self {
+            window,
+            handle: unsafe {
+                ash_window::create_surface(entry, instance, display_handle, window_handle, None)
+                    .expect("Failed to create surface")
+            },
+            fns: ash::khr::surface::Instance::new(&entry, &instance),
         }
     }
 }

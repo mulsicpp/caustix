@@ -1,92 +1,187 @@
-use ash::vk::{self, Handle};
+use std::ffi::{CStr, CString};
 
-use crate::core::instance::Instance;
+use ash::vk;
+
+use crate::core::instance::{Instance, Surface};
+
+pub struct DeviceExtensions {
+    pub swapchain: Option<ash::khr::swapchain::Device>,
+}
 
 pub struct Device {
-    pub _physical_device: vk::PhysicalDevice,
-    pub _device: ash::Device,
+    pub physical_device: vk::PhysicalDevice,
+    pub device: ash::Device,
 
-    pub _main_queue: vk::Queue,
-    pub _present_queue: vk::Queue,
+    pub main_queue: vk::Queue,
+    pub present_queue: vk::Queue,
+
+    pub extensions: DeviceExtensions,
 }
 
 impl Device {
-    fn select_physical_device(instance: &Instance) -> (vk::PhysicalDevice, u32) {
-        let physical_devices =
-            unsafe { instance.instance.enumerate_physical_devices() }.unwrap_or(vec![]);
+    fn check_physical_device(
+        physical_device: vk::PhysicalDevice,
+        instance: &Instance,
+        required_extensions: &Vec<*const i8>,
+    ) -> Option<(u32, u32)> {
+        let surface = instance.surface.as_ref();
+        let instance = &instance.instance;
 
-        for physical_device in physical_devices {
-            //let mut props = vk::PhysicalDeviceProperties2::default();
-            //let mut features = vk::PhysicalDeviceFeatures2::default();
+        let queue_family_count =
+            unsafe { instance.get_physical_device_queue_family_properties2_len(physical_device) };
+        let mut queue_families = vec![vk::QueueFamilyProperties2::default(); queue_family_count];
+        unsafe {
+            //instance.get_physical_device_properties2(physical_device, &mut props);
+            //instance.get_physical_device_features2(physical_device, &mut features);
+            instance
+                .get_physical_device_queue_family_properties2(physical_device, &mut queue_families);
+        }
 
-            let instance = &instance.instance;
+        let extension_names = unsafe {
+            instance
+                .enumerate_device_extension_properties(physical_device)
+                .ok()?
+        }
+        .iter()
+        .map(|prop| CString::from(unsafe { CStr::from_ptr(prop.extension_name.as_ptr()) }))
+        .collect::<Vec<_>>();
 
-            let queue_family_count = unsafe {
-                instance.get_physical_device_queue_family_properties2_len(physical_device)
-            };
-            let mut queue_familys = vec![vk::QueueFamilyProperties2::default(); queue_family_count];
-
-            unsafe {
-                //instance.get_physical_device_properties2(physical_device, &mut props);
-                //instance.get_physical_device_features2(physical_device, &mut features);
-                instance.get_physical_device_queue_family_properties2(
-                    physical_device,
-                    &mut queue_familys,
-                );
+        for &ext in required_extensions.iter() {
+            let ext_cstr = CString::from(unsafe { CStr::from_ptr(ext) });
+            if !extension_names.contains(&ext_cstr) {
+                return None;
             }
+        }
 
-            let mut main_queue_idx: Option<u32> = None;
-
-            for (i, queue_family) in queue_familys.iter().enumerate() {
-                if queue_family
+        let graphics_families = queue_families
+            .iter()
+            .enumerate()
+            .filter_map(|(i, queue_family)| {
+                queue_family
                     .queue_family_properties
                     .queue_flags
                     .contains(vk::QueueFlags::GRAPHICS)
-                {
-                    main_queue_idx = Some(i as u32);
-                }
-            }
+                    .then_some(i as u32)
+            })
+            .collect::<Vec<u32>>();
 
-            if let Some(main_queue_idx) = main_queue_idx {
-                return (physical_device, main_queue_idx);
+        if let Some(Surface {
+            handle: surface,
+            fns: surface_fns,
+            ..
+        }) = surface
+        {
+            let present_families = queue_families
+                .iter()
+                .enumerate()
+                .filter_map(|(i, _)| {
+                    if let Ok(true) = unsafe {
+                        surface_fns.get_physical_device_surface_support(
+                            physical_device,
+                            i as u32,
+                            *surface,
+                        )
+                    } {
+                        Some(i as u32)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<u32>>();
+
+            let combined_familes: Vec<u32> = graphics_families
+                .iter()
+                .filter_map(|&idx| present_families.contains(&idx).then_some(idx))
+                .collect();
+
+            if let Some(&idx) = combined_familes.first() {
+                return Some((idx, idx));
+            } else {
+                return Some((*graphics_families.first()?, *present_families.first()?));
             }
+        } else {
+            let &idx = graphics_families.first()?;
+
+            return Some((idx, idx));
         }
-
-        (vk::PhysicalDevice::null(), u32::MAX)
     }
 
     pub fn create(instance: &Instance) -> Self {
-        let (physical_device, main_queue_idx) = Self::select_physical_device(instance);
+        let mut required_extensions = vec![];
 
-        if physical_device.is_null() {
-            panic!("Could not find suitable physical device");
+        if instance.surface.is_some() {
+            required_extensions.push(ash::khr::swapchain::NAME.as_ptr());
         }
 
-        let main_queue_info = vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(main_queue_idx)
-            .queue_priorities(&[1.0]);
-
-        let queue_infos = vec![main_queue_info];
-
-        let mut features2 = vk::PhysicalDeviceFeatures2::default();
-
-        let device_info = vk::DeviceCreateInfo::default()
-            .queue_create_infos(queue_infos.as_slice())
-            .push_next(&mut features2);
-
-        let device = unsafe {
+        for physical_device in unsafe {
             instance
                 .instance
-                .create_device(physical_device, &device_info, None)
-        }
-        .expect("Failed to create device");
+                .enumerate_physical_devices()
+                .expect("Failed to enumerate physical devices")
+        } {
+            if let Some((main_idx, present_idx)) =
+                Self::check_physical_device(physical_device, instance, &required_extensions)
+            {
+                let queue_infos: Vec<_> = if main_idx == present_idx {
+                    vec![main_idx]
+                } else {
+                    vec![main_idx, present_idx]
+                }
+                .iter()
+                .map(|&idx| {
+                    vk::DeviceQueueCreateInfo::default()
+                        .queue_family_index(idx)
+                        .queue_priorities(&[1.0])
+                })
+                .collect();
 
-        Self {
-            _physical_device: physical_device,
-            _device: device,
-            _main_queue: vk::Queue::null(),
-            _present_queue: vk::Queue::null(),
+                let mut features2 = vk::PhysicalDeviceFeatures2::default();
+
+                let device_info = vk::DeviceCreateInfo::default()
+                    .queue_create_infos(queue_infos.as_slice())
+                    .enabled_extension_names(&required_extensions)
+                    .push_next(&mut features2);
+
+                let device = unsafe {
+                    instance
+                        .instance
+                        .create_device(physical_device, &device_info, None)
+                }
+                .expect("Failed to create device");
+
+                let main_queue = unsafe {
+                    device.get_device_queue2(
+                        &vk::DeviceQueueInfo2::default()
+                            .queue_family_index(main_idx)
+                            .queue_index(0),
+                    )
+                };
+
+                let present_queue = unsafe {
+                    device.get_device_queue2(
+                        &vk::DeviceQueueInfo2::default()
+                            .queue_family_index(present_idx)
+                            .queue_index(0),
+                    )
+                };
+
+                let extensions = DeviceExtensions {
+                    swapchain: instance
+                        .surface
+                        .is_some()
+                        .then(|| ash::khr::swapchain::Device::new(&instance.instance, &device)),
+                };
+
+                return Self {
+                    physical_device,
+                    device,
+                    main_queue,
+                    present_queue,
+                    extensions,
+                };
+            }
         }
+        panic!("Failed to find a suitable physical device");
     }
 }
 
@@ -94,7 +189,7 @@ impl Drop for Device {
     fn drop(&mut self) {
         println!("dropping the device");
         unsafe {
-            self._device.destroy_device(None);
+            self.device.destroy_device(None);
         }
     }
 }
