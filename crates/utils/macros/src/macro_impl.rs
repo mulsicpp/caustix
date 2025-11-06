@@ -6,9 +6,13 @@ pub fn derive_parameters(item: syn::ItemStruct) -> TokenStream {
 
     let mut field_functions: Vec<TokenStream> = vec![];
     
-    for field in item.fields {
+    'outer: for field in item.fields {
         let field_type = field.ty;
         let field_ident = field.ident.unwrap();
+
+        for field_attr in field.attrs {
+            if field_attr.path().is_ident("no_param") { continue 'outer; }
+        }
 
         field_functions.push(quote! {
             pub fn #field_ident(mut self, val: impl Into<#field_type>) -> Self {

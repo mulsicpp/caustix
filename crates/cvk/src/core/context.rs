@@ -101,6 +101,10 @@ impl Context {
         &self.device
     }
 
+    pub fn allocator(&self) -> &vk_mem::Allocator {
+        &self.allocator
+    }
+
     pub fn window(&self) -> Option<&Window> {
         Some(&self.instance.surface.as_ref()?.window)
     }

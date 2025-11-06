@@ -7,10 +7,10 @@ use winit::window::Window;
 use crate::{ContextInfo, VkHandle};
 
 pub struct Instance {
-    pub(crate) debug_utils: Option<DebugUtils>,
-    pub(crate) surface: Option<Surface>,
-    pub(crate) instance: ash::Instance,
-    pub(crate) _entry: ash::Entry,
+    pub debug_utils: Option<DebugUtils>,
+    pub surface: Option<Surface>,
+    pub instance: ash::Instance,
+    _entry: ash::Entry,
 }
 
 impl Instance {

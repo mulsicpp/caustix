@@ -1,7 +1,5 @@
 use std::ffi::{CStr, CString};
 
-use cvk::VkHandle;
-use utils::Buildable;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,

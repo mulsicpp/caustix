@@ -3,7 +3,7 @@ use quote::quote;
 
 mod macro_impl;
 
-#[proc_macro_derive(Paramters)]
+#[proc_macro_derive(Paramters, attributes(no_param))]
 pub fn derive_parameters(input: TokenStream) -> TokenStream {
     let parse_result = syn::parse::<syn::ItemStruct>(input);
 

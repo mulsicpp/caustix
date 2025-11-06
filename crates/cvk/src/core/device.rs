@@ -2,7 +2,10 @@ use std::ffi::{CStr, CString};
 
 use ash::vk;
 
-use crate::core::instance::{Instance, Surface};
+use crate::{
+    VkHandle,
+    core::instance::{Instance, Surface},
+};
 
 pub struct DeviceExtensions {
     pub swapchain: Option<ash::khr::swapchain::Device>,
@@ -12,8 +15,8 @@ pub struct Device {
     pub physical_device: vk::PhysicalDevice,
     pub device: ash::Device,
 
-    pub main_queue: vk::Queue,
-    pub present_queue: vk::Queue,
+    pub main_queue: Queue,
+    pub present_queue: Queue,
 
     pub extensions: DeviceExtensions,
 }
@@ -149,20 +152,26 @@ impl Device {
                 }
                 .expect("Failed to create device");
 
-                let main_queue = unsafe {
-                    device.get_device_queue2(
-                        &vk::DeviceQueueInfo2::default()
-                            .queue_family_index(main_idx)
-                            .queue_index(0),
-                    )
+                let main_queue = Queue {
+                    handle: unsafe {
+                        device.get_device_queue2(
+                            &vk::DeviceQueueInfo2::default()
+                                .queue_family_index(main_idx)
+                                .queue_index(0),
+                        )
+                    },
+                    family_idx: main_idx,
                 };
 
-                let present_queue = unsafe {
-                    device.get_device_queue2(
-                        &vk::DeviceQueueInfo2::default()
-                            .queue_family_index(present_idx)
-                            .queue_index(0),
-                    )
+                let present_queue = Queue {
+                    handle: unsafe {
+                        device.get_device_queue2(
+                            &vk::DeviceQueueInfo2::default()
+                                .queue_family_index(present_idx)
+                                .queue_index(0),
+                        )
+                    },
+                    family_idx: present_idx,
                 };
 
                 let extensions = DeviceExtensions {
@@ -191,5 +200,18 @@ impl Drop for Device {
         unsafe {
             self.device.destroy_device(None);
         }
+    }
+}
+
+pub struct Queue {
+    pub handle: vk::Queue,
+    pub family_idx: u32,
+}
+
+impl VkHandle for Queue {
+    type HandleType = vk::Queue;
+
+    fn handle(&self) -> Self::HandleType {
+        self.handle
     }
 }
