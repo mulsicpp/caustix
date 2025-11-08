@@ -1,6 +1,6 @@
 
 #[repr(u32)]
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, Debug)]
 pub enum MemoryUsage {
     #[default]
     Auto,

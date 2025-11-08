@@ -1,12 +1,12 @@
 use std::{
     num::NonZero,
-    ptr::{NonNull, slice_from_raw_parts, slice_from_raw_parts_mut},
+    ptr::{NonNull, copy_nonoverlapping, slice_from_raw_parts, slice_from_raw_parts_mut},
 };
 
 use ash::vk;
 use vk_mem::Alloc;
 
-use crate::{Context, MemoryUsage};
+use crate::{Context, MemoryUsage, Recording, VkHandle};
 
 use utils::{Build, Buildable};
 
@@ -66,6 +66,59 @@ impl Buffer {
     }
 }
 
+#[derive(utils::Paramters, Default)]
+pub struct BufferCopyRegion {
+    pub src_offset: vk::DeviceSize,
+    pub dst_offset: vk::DeviceSize,
+    pub size: vk::DeviceSize,
+}
+
+impl BufferCopyRegion {
+    fn as_raw(&self) -> vk::BufferCopy {
+        let Self {
+            src_offset,
+            dst_offset,
+            size,
+        } = *self;
+        vk::BufferCopy {
+            src_offset,
+            dst_offset,
+            size,
+        }
+    }
+}
+
+impl Recording {
+    pub fn copy_buffer(&self, src: &Buffer, dst: &mut Buffer) {
+        let raw_region = vk::BufferCopy::default().size(src.size.min(dst.size));
+        unsafe {
+            Context::get_device().cmd_copy_buffer(
+                self.handle(),
+                src.handle,
+                dst.handle,
+                &[raw_region],
+            );
+        }
+    }
+
+    pub fn copy_buffer_regions(
+        &self,
+        src: &Buffer,
+        dst: &mut Buffer,
+        copy_regions: &[BufferCopyRegion],
+    ) {
+        let raw_regions: Vec<_> = copy_regions.iter().map(|region| region.as_raw()).collect();
+        unsafe {
+            Context::get_device().cmd_copy_buffer(
+                self.handle(),
+                src.handle,
+                dst.handle,
+                &raw_regions,
+            );
+        }
+    }
+}
+
 impl Drop for Buffer {
     fn drop(&mut self) {
         unsafe {
@@ -77,23 +130,23 @@ impl Drop for Buffer {
 }
 
 impl Buildable for Buffer {
-    type Builder = BufferBuilder;
+    type Builder<'a> = BufferBuilder<'a>;
 }
 
-#[derive(Clone, utils::Paramters)]
-pub struct BufferBuilder {
+#[derive(Clone, Debug, utils::Paramters)]
+pub struct BufferBuilder<'a> {
     #[no_param]
     size: NonZero<vk::DeviceSize>,
     #[no_param]
     align: vk::DeviceSize,
     #[no_param]
-    data: Option<NonNull<u8>>,
+    data: Option<utils::ScopedPtr<'a, u8>>,
     usage: BufferUsage,
     memory_usage: MemoryUsage,
     mapped_data: bool,
 }
 
-impl BufferBuilder {
+impl<'a> BufferBuilder<'a> {
     pub fn size(mut self, size: impl Into<vk::DeviceSize>) -> Self {
         self.size = NonZero::new(size.into()).expect("Buffer size needs to be greater than zero");
         self.align = 1;
@@ -119,17 +172,20 @@ impl BufferBuilder {
         )
     }
 
-    pub fn data_slice<T>(mut self, slice: &[T]) -> Self {
+    pub fn data_slice<T>(mut self, slice: &'a [T]) -> Self {
         self = self.count_of::<T>(slice.len() as vk::DeviceSize);
         self.data = slice
             .first()
-            .and_then(|first| NonNull::new(first as *const T as *mut T as *mut u8));
+            .and_then(|first| utils::ScopedPtr::new(first as *const T as *mut T as *mut u8));
+
         self
     }
 
     pub fn data<T>(mut self, value: &T) -> Self {
         self = self.count_of::<T>(1 as vk::DeviceSize);
-        self.data = Some(unsafe { NonNull::new_unchecked(value as *const T as *mut T as *mut u8) });
+        self.data = Some(unsafe {
+            utils::ScopedPtr::new_unchecked(value as *const T as *mut T as *mut u8)
+        });
         self
     }
 
@@ -140,7 +196,7 @@ impl BufferBuilder {
     }
 }
 
-impl Default for BufferBuilder {
+impl Default for BufferBuilder<'_> {
     fn default() -> Self {
         Self {
             align: 1,
@@ -153,7 +209,7 @@ impl Default for BufferBuilder {
     }
 }
 
-impl Build for BufferBuilder {
+impl<'a> Build for BufferBuilder<'a> {
     type Target = Buffer;
 
     fn build(&self) -> Self::Target {
@@ -162,30 +218,34 @@ impl Build for BufferBuilder {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .usage(self.usage);
 
-        let required_flags = if self.mapped_data {
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE
+        let flags = if self.mapped_data {
+            vk_mem::AllocationCreateFlags::HOST_ACCESS_RANDOM |
+            //vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE |
+            vk_mem::AllocationCreateFlags::MAPPED
         } else {
-            vk::MemoryPropertyFlags::empty()
+            vk_mem::AllocationCreateFlags::empty()
         };
 
-        let memory_info = vk_mem::AllocationCreateInfo {
+        let alloc_info = vk_mem::AllocationCreateInfo {
             usage: self.memory_usage.as_vma(),
-            required_flags,
+            flags,
             ..Default::default()
         };
 
-        let (buffer, mut allocation) = unsafe {
+        let (buffer, allocation) = unsafe {
             Context::get().allocator().create_buffer_with_alignment(
                 &buffer_info,
-                &memory_info,
+                &alloc_info,
                 self.align,
             )
         }
         .expect("Failed to create buffer");
 
         let mapped_data = if self.mapped_data {
-            let mapped_data_ptr =
-                unsafe { Context::get().allocator().map_memory(&mut allocation) }.unwrap();
+            let mapped_data_ptr = Context::get()
+                .allocator()
+                .get_allocation_info(&allocation)
+                .mapped_data as *mut u8;
 
             if !mapped_data_ptr.is_null() {
                 Some(unsafe { NonNull::new_unchecked(mapped_data_ptr) })
@@ -195,6 +255,18 @@ impl Build for BufferBuilder {
         } else {
             None
         };
+
+        if let Some(data) = self.data {
+            if let Some(mapped_data) = mapped_data {
+                unsafe {
+                    copy_nonoverlapping(
+                        data.as_ptr() as *const u8,
+                        mapped_data.as_ptr(),
+                        self.size.get() as usize,
+                    )
+                };
+            }
+        }
 
         Buffer {
             handle: buffer,

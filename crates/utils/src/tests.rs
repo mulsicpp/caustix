@@ -19,7 +19,7 @@ impl Build for FooBuilder {
 struct Foo(String, u32);
 
 impl Buildable for Foo {
-    type Builder = FooBuilder;
+    type Builder<'a> = FooBuilder;
 }
 
 #[test]

@@ -1,5 +1,7 @@
 use std::ffi::{CStr, CString};
 
+use cvk::BufferCopyRegion;
+use utils::{Build, Buildable};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -33,16 +35,42 @@ impl App {
             .window(window);
 
         cvk::Context::init(context_info);
+
+        let b1 = cvk::Buffer::builder()
+            .staging_buffer()
+            .data_slice(c"blabla".to_bytes_with_nul())
+            .build();
+
+        let b1_str = CStr::from_bytes_with_nul(b1.mapped_slice::<u8>().unwrap())
+            .unwrap()
+            .to_str()
+            .unwrap();
+        dbg!(&b1_str);
+
+        let mut b2 = cvk::Buffer::builder()
+            .staging_buffer()
+            .usage(cvk::BufferUsage::TRANSFER_SRC | cvk::BufferUsage::TRANSFER_DST)
+            .data_slice(c"lollol".to_bytes_with_nul())
+            .build();
+
+        let recording = cvk::CommandBuffer::new(cvk::CommandBufferUses::Single).start_recording();
+        recording.copy_buffer_regions(&b1, &mut b2, &[BufferCopyRegion::default().size(3u64)]);
+        recording.copy_buffer(&b1, &mut b2);
+        recording.submit();
+
+        let b2_str = CStr::from_bytes_with_nul(b2.mapped_slice::<u8>().unwrap())
+            .unwrap()
+            .to_str()
+            .unwrap();
+        dbg!(&b2_str);
     }
 
-    fn redraw(&mut self) {
-
-    }
+    fn redraw(&mut self) {}
 
     fn handle_event(&mut self, event: WindowEvent, _event_loop: &ActiveEventLoop) {
         // println!("event: {:#?}", event);
         match event {
-            _ => ()
+            _ => (),
         }
     }
 
@@ -52,7 +80,7 @@ impl App {
 
         let mut app = App {
             name: APP_NAME.into(),
-            engine_name: ENGINE_NAME.into()
+            engine_name: ENGINE_NAME.into(),
         };
 
         event_loop.run_app(&mut app).unwrap();
