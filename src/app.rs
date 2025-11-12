@@ -43,26 +43,36 @@ impl App {
         let b1_slice = b1.mapped().unwrap();
         println!("{:?}", b1_slice);
 
-        let b2 = cvk::Buffer::builder()
+        let mut b2 = cvk::Buffer::builder()
             .staging_buffer()
             .usage(cvk::BufferUsage::TRANSFER_SRC | cvk::BufferUsage::TRANSFER_DST)
             .count(5u64)
             .build();
 
+        let b2_reg = b2.region(1..).region(1);
+
+        dbg!(&b2_reg);
+
         cvk::CommandBuffer::run_single_use(|recording| {
             recording.copy_buffer_regions(
                 &b1,
                 &b2,
-                &[
-                    ((0..).into(), (0..).into()),
-                    (0.into(), (2..).into()),
-                    ((0..).into(), (3..).into()),
-                ],
+                &cvk::copy_ranges![(0.. => 0..), (0 => 2..), (0.. => 3..)],
             );
             // recording.copy_buffer(&b1, &b2);
         });
 
         let b2_slice = b2.mapped().unwrap();
+        println!("{:?}", b2_slice);
+
+        let b2_slice = b2.mapped_mut().unwrap();
+
+        for (i, el) in b2_slice.iter_mut().enumerate() {
+            *el = i;
+        }
+        println!("{:?}", b2_slice);
+
+        let b2_slice = b2.region(3..).mapped().unwrap();
         println!("{:?}", b2_slice);
     }
 
