@@ -37,34 +37,23 @@ impl App {
         cvk::Context::init(context_info);
 
         let b1 = cvk::Buffer::builder()
-            .data(&[5, 2])
+            .data(&[1; 6])
             .usage(BufferUsage::TRANSFER_SRC | BufferUsage::TRANSFER_DST)
             .memory_usage(cvk::MemoryUsage::PreferDevice)
             .build();
 
-        let b2_reg;
+        let b2 = cvk::Buffer::<i32>::builder()
+            .staging_buffer()
+            .usage(cvk::BufferUsage::TRANSFER_SRC | cvk::BufferUsage::TRANSFER_DST)
+            .data(&[0; 6])
+            .build();
 
-        {
-            let b2 = cvk::Buffer::<i32>::builder()
-                .staging_buffer()
-                .usage(cvk::BufferUsage::TRANSFER_SRC | cvk::BufferUsage::TRANSFER_DST)
-                .data(&[0, 1, 2, 3, 4])
-                .build();
+        let b2_slice = b2.mapped().unwrap();
+        println!("{:?}", b2_slice);
 
-            let b2_slice = b2.mapped().unwrap();
-            println!("{:?}", b2_slice);
+        b1.region(..).copy(b2.region(3..));
 
-            cvk::CommandBuffer::run_single_use(|recording| {
-                recording.copy_buffer(&b1, &b2);
-            });
-            println!("{:?}", b2_slice);
-
-            let reg = b2.region(1..);
-
-            b2_reg = reg.region(..3);
-            println!("{:?}",b2_reg.mapped().unwrap());
-        }
-
+        println!("{:?}", b2_slice);
     }
 
     fn redraw(&mut self) {}

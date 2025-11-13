@@ -14,7 +14,7 @@ pub type BufferUsage = vk::BufferUsageFlags;
 #[macro_export]
 macro_rules! copy_ranges {
     ($(($src:expr => $dst:expr)),*) => {
-        [$(cvk::BufferCopyRange::new($src, $dst)),*]
+        [$($crate::BufferCopyRange::new($src, $dst)),*]
     };
 }
 
@@ -39,7 +39,10 @@ where
         self.count() * size_of::<T>() as vk::DeviceSize
     }
 
-    fn mapped<'a>(self) -> Option<&'a [T]> where Self: 'a {
+    fn mapped<'a>(self) -> Option<&'a [T]>
+    where
+        Self: 'a,
+    {
         Some(unsafe {
             &*slice_from_raw_parts(
                 self.buffer_ref()
@@ -50,12 +53,27 @@ where
             )
         })
     }
+
+    fn copy(self, dst: impl BufferRegionLike<T>) {
+        crate::CommandBuffer::run_single_use(|recording| {
+            recording.copy_buffer(self, dst);
+        });
+    }
+
+    fn copy_regions(self, dst: impl BufferRegionLike<T>, ranges: &[BufferCopyRange]) {
+        crate::CommandBuffer::run_single_use(|recording| {
+            recording.copy_buffer_regions(self, dst, ranges);
+        });
+    }
 }
 
 pub trait BufferRegionLikeMut<T: Copy>: BufferRegionLike<T> {
     fn buffer_mut(&mut self) -> &mut Buffer<T>;
 
-    fn mapped_mut<'a>(mut self) -> Option<&'a mut [T]> where Self: 'a {
+    fn mapped_mut<'a>(mut self) -> Option<&'a mut [T]>
+    where
+        Self: 'a,
+    {
         Some(unsafe {
             &mut *slice_from_raw_parts_mut(
                 self.buffer_mut()
@@ -72,14 +90,18 @@ pub trait GetBufferRegion<T: Copy>
 where
     Self: Sized,
 {
-    fn region<'a>(self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'a, T> where Self: 'a;
+    fn region<'a>(self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'a, T>
+    where
+        Self: 'a;
 }
 
 pub trait GetBufferRegionMut<T: Copy>
 where
     Self: Sized,
 {
-    fn region_mut<'a>(self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegionMut<'a, T> where Self: 'a;
+    fn region_mut<'a>(self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegionMut<'a, T>
+    where
+        Self: 'a;
 }
 
 // --------------------- Buffer ---------------------
@@ -108,6 +130,14 @@ impl<T: Copy> Buffer<T> {
 
     pub fn mapped_mut(&mut self) -> Option<&mut [T]> {
         <&mut Self as BufferRegionLikeMut<T>>::mapped_mut(self)
+    }
+
+    pub fn copy(&self, dst: impl BufferRegionLike<T>) {
+        <&Self as BufferRegionLike<T>>::copy(self, dst)
+    }
+
+    pub fn copy_regions(&self, dst: impl BufferRegionLike<T>, ranges: &[BufferCopyRange]) {
+        <&Self as BufferRegionLike<T>>::copy_regions(self, dst, ranges)
     }
 
     pub fn region(&'_ self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'_, T> {
@@ -163,7 +193,10 @@ impl<T: Copy> BufferRegionLikeMut<T> for &mut Buffer<T> {
 }
 
 impl<'a, T: Copy> GetBufferRegion<T> for &'a Buffer<T> {
-    fn region<'b>(self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'b, T> where 'a: 'b {
+    fn region<'b>(self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'b, T>
+    where
+        'a: 'b,
+    {
         BufferRegion {
             buffer: self,
             span: span.to_span(self.span()),
@@ -172,7 +205,10 @@ impl<'a, T: Copy> GetBufferRegion<T> for &'a Buffer<T> {
 }
 
 impl<'a, T: Copy> GetBufferRegionMut<T> for &'a mut Buffer<T> {
-    fn region_mut<'b>(self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegionMut<'b, T> where 'a: 'b {
+    fn region_mut<'b>(self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegionMut<'b, T>
+    where
+        'a: 'b,
+    {
         BufferRegionMut {
             span: span.to_span(self.span()),
             buffer: self,
@@ -216,6 +252,14 @@ impl<'a, T: Copy> BufferRegion<'a, T> {
         <Self as BufferRegionLike<T>>::mapped(self)
     }
 
+    pub fn copy(self, dst: impl BufferRegionLike<T>) {
+        <Self as BufferRegionLike<T>>::copy(self, dst)
+    }
+
+    pub fn copy_regions(self, dst: impl BufferRegionLike<T>, ranges: &[BufferCopyRange]) {
+        <Self as BufferRegionLike<T>>::copy_regions(self, dst, ranges)
+    }
+
     pub fn region(self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'a, T> {
         <Self as GetBufferRegion<T>>::region(self, span)
     }
@@ -232,7 +276,10 @@ impl<T: Copy> BufferRegionLike<T> for BufferRegion<'_, T> {
 }
 
 impl<'a, T: Copy> GetBufferRegion<T> for BufferRegion<'a, T> {
-    fn region<'b>(mut self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'b, T> where 'a: 'b {
+    fn region<'b>(mut self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'b, T>
+    where
+        'a: 'b,
+    {
         self.span = span.to_span(self.span());
         self
     }
@@ -311,7 +358,10 @@ impl<T: Copy> BufferRegionLikeMut<T> for BufferRegionMut<'_, T> {
 }
 
 impl<'a, T: Copy> GetBufferRegion<T> for BufferRegionMut<'a, T> {
-    fn region<'b>(mut self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'b, T> where 'a: 'b {
+    fn region<'b>(mut self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegion<'b, T>
+    where
+        'a: 'b,
+    {
         self.span = span.to_span(self.span());
         let Self { buffer, span } = self;
         BufferRegion { buffer, span }
@@ -319,7 +369,10 @@ impl<'a, T: Copy> GetBufferRegion<T> for BufferRegionMut<'a, T> {
 }
 
 impl<'a, T: Copy> GetBufferRegionMut<T> for BufferRegionMut<'a, T> {
-    fn region_mut<'b>(mut self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegionMut<'b, T> where 'a: 'b {
+    fn region_mut<'b>(mut self, span: impl ToSpan<vk::DeviceSize>) -> BufferRegionMut<'b, T>
+    where
+        'a: 'b,
+    {
         self.span = span.to_span(self.span());
         self
     }
@@ -443,10 +496,15 @@ impl<'a, T: Copy> Build for BufferBuilder<'a, T> {
             if let Some(mapped_data) = buffer.mapped_data {
                 unsafe { copy_nonoverlapping(data.as_ptr(), mapped_data.as_ptr(), count as usize) };
             } else {
-                assert!(self.usage.contains(BufferUsage::TRANSFER_DST), "Building buffer with data and unmapped memory needs usage TRANSFER_DST");
-                
+                assert!(
+                    self.usage.contains(BufferUsage::TRANSFER_DST),
+                    "Building buffer with data and unmapped memory needs usage TRANSFER_DST"
+                );
+
                 let staging_buffer = Self::default().staging_buffer().data(data).build();
-                CommandBuffer::run_single_use(|recording| recording.copy_buffer(&staging_buffer, &buffer));
+                CommandBuffer::run_single_use(|recording| {
+                    recording.copy_buffer(&staging_buffer, &buffer)
+                });
             }
         }
 

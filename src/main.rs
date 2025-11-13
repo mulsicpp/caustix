@@ -1,9 +1,8 @@
-
 pub mod app;
 
 pub use app::*;
 
-fn main() {
 
+fn main() {
     App::run();
 }
